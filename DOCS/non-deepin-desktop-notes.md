@@ -81,6 +81,26 @@ rm -rf ~/.cache/fontconfig && fc-cache -f -v                # 字体缓存损坏
 
 ## 6. 构建安装包
 
-- 本地：`dpkg-buildpackage -b -us -uc`（`debian/rules` 里的并行度取 `$(JOBS)`，未设置时按 CPU 核数）；
-- CI：`.github/workflows/package-deb.yml` 会在 Ubuntu 22.04 上装好 Qt5 + DTK 依赖打包，
-  产物 `.deb` 在 Actions 运行页面的 Artifacts 里下载（不创建 Release、不创建 PR）。
+本地打 deb：`dpkg-buildpackage -b -us -uc`
+（`debian/rules` 的并行度取 `$(JOBS)`，未设置时按 CPU 核数；也可用 `DEB_BUILD_OPTIONS=parallel=N`）。
+
+CI：`.github/workflows/package-linux.yml` 在 Ubuntu 22.04 上构建三种包：
+
+| 格式 | 做法 | 定位 |
+| --- | --- | --- |
+| `.deb` | `dpkg-buildpackage` | 发行版规范打包，主产物 |
+| `.rpm` | 由 `.deb` 用 fpm 转换，失败回退 alien | 便于在 Fedora / openSUSE 上试装 |
+| `.AppImage` | 取 `.deb` 的载荷 + linuxdeploy / linuxdeploy-plugin-qt | 免安装，`chmod +x` 后直接跑 |
+
+产物下载位置：
+
+1. Actions → 对应运行记录 → 页面底部 **Artifacts** → `spark-store-packages-ubuntu-22.04`
+   （zip，内含三种包 + `SHA256SUMS.txt`）；
+2. 命令行：`gh run download -R <owner>/<repo> -n spark-store-packages-ubuntu-22.04`；
+3. 打 tag（`refs/tags/*`）时会**自动附加到同名 Release**，可在 Releases 页面直接下载。
+
+rpm / AppImage 属于“尽力而为”的附加产物：失败不会让运行变红，只会在运行摘要与 Annotation
+里以 warning 标出；`.deb` 失败才会让运行变红。
+
+> 注意：AppImage 只打包主程序（GUI）。安装/升级功能依赖 aptss/apt，属于 Debian 系专有，
+> 在非 Debian 系统上请用该发行版自身的方式安装软件。

@@ -1,0 +1,185 @@
+name: Build Linux Package
+
+# 构建 Linux 安装包并上传为 Artifacts：
+#   * .deb      —— dpkg-buildpackage（发行版规范的打包，主产物）
+#   * .rpm      —— 由 .deb 用 fpm 转换，失败则回退 alien（方便在 Fedora/openSUSE 上试装）
+#   * .AppImage —— 由 .deb 的载荷 + linuxdeploy / linuxdeploy-plugin-qt 生成（免安装，可到处跑）
+#
+# 说明：
+#   * 不创建 PR；打 tag 时会把三种包附加到同名 Release，分支推送只会产出 Artifacts；
+#   * rpm / AppImage 属于“尽力而为”的附加产物：失败不会让运行变红，
+#     但会在运行摘要和 Annotation 里用 warning 标出来，同时 .deb 始终是硬性要求。
+#   * 手动触发：Actions → Build Linux Package → Run workflow。
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    name: Build packages (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write # 只有打 tag 时的“附加到 Release”步骤会用到
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # DTK 5.5.x + Qt 5.15.3，与 debian/control 里声明的依赖一致
+          - name: ubuntu-22.04
+            runner: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # src/spark-store.pro 里用 `git symbolic-ref --short -q HEAD` 取分支名写入版本号
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates debhelper devscripts dh-make dpkg-dev fakeroot pkg-config \
+            qtbase5-dev qtbase5-dev-tools qt5-qmake qtchooser qttools5-dev-tools \
+            qtwebengine5-dev libqt5svg5-dev qtwayland5 \
+            libdtkcore-dev libdtkgui-dev libdtkwidget-dev
+          # 打 rpm / AppImage 需要的额外工具
+          sudo apt-get install -y --no-install-recommends \
+            rpm alien patchelf desktop-file-utils file libfuse2 ruby squashfs-tools
+          # 部分发行版把 qmake/moc/uic/lupdate 放在 /usr/lib/qt5/bin 下，补一下 PATH
+          if ! command -v qmake >/dev/null 2>&1; then
+            sudo ln -sf /usr/lib/qt5/bin/qmake /usr/local/bin/qmake
+          fi
+          qmake --version
+
+      - name: Build .deb
+        run: |
+          set -eux
+          export QT_SELECT=qt5
+          export PATH="/usr/lib/qt5/bin:$PATH"
+          # 并行度给 debian/rules 里的 $(JOBS)；DEB_BUILD_OPTIONS 里的 parallel 供 dh 自身步骤使用
+          export JOBS="$(nproc)"
+          export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
+
+          dpkg-buildpackage -b -us -uc
+
+          mkdir -p dist
+          cp -v ../*.deb dist/
+          cp -v ../*.buildinfo dist/ || true
+          ls -lh dist
+
+      - name: Build .rpm (convert from .deb)
+        continue-on-error: true
+        run: |
+          set -ux
+          deb="$(ls dist/spark-store_*.deb | head -n 1)"
+
+          # 首选 fpm（元数据更规范），装不上或转换失败再回退 alien
+          sudo gem install --no-document fpm >/dev/null 2>&1 || true
+          if command -v fpm >/dev/null 2>&1; then
+            fpm -s deb -t rpm -p dist/ "$deb" && echo "rpm: 由 fpm 生成"
+          fi
+
+          if ! compgen -G "dist/*.rpm" >/dev/null; then
+            echo "::warning::fpm 未能生成 rpm，改用 alien 转换"
+            sudo alien --to-rpm --scripts --keep-version "$(realpath "$deb")"
+            sudo mv -v ./*.rpm dist/ || true
+          fi
+
+          sudo chown -R "$(id -u):$(id -g)" dist
+          ls -lh dist || true
+
+      - name: Build .AppImage
+        continue-on-error: true
+        run: |
+          set -eux
+          deb="$(ls dist/spark-store_*.deb | head -n 1)"
+          ver="$(basename "$deb" | sed -E 's/^[^_]+_([^_]+)_.*$/\1/')"
+
+          # 用 .deb 的载荷来组装 AppDir，保证内容跟 deb 完全一致
+          rm -rf AppDir staging && mkdir -p AppDir staging
+          dpkg-deb -x "$deb" AppDir
+
+          # 主程序在 deb 里位于 /opt/durapps/spark-store/bin/spark-store（见 src/spark-store.pro 的 target.path）
+          BIN="$(find AppDir -type f -name spark-store -perm -111 | head -n 1)"
+          if [ -z "$BIN" ]; then
+            BIN="$(ls build-*/src/spark-store 2>/dev/null | head -n 1)"
+          fi
+          cp -v "$BIN" staging/spark-store
+
+          install -Dm644 pkg/usr/share/applications/spark-store.desktop \
+            AppDir/usr/share/applications/spark-store.desktop
+          install -Dm644 pkg/usr/share/icons/hicolor/scalable/apps/spark-store.png \
+            AppDir/usr/share/icons/hicolor/scalable/apps/spark-store.png
+
+          mkdir -p tools
+          curl -sSL -o tools/linuxdeploy \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -sSL -o tools/linuxdeploy-plugin-qt \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          curl -sSL -o tools/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x tools/linuxdeploy tools/linuxdeploy-plugin-qt tools/appimagetool
+
+          # 无 FUSE 的 CI 环境下用解包方式运行 AppImage 工具
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export PATH="$PWD/tools:$PATH"
+          export QMAKE="$(command -v qmake)"
+
+          ./tools/linuxdeploy \
+            --appdir AppDir \
+            --executable staging/spark-store \
+            --desktop-file AppDir/usr/share/applications/spark-store.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/spark-store.png \
+            --plugin qt \
+            --output appimage
+
+          mv ./*.AppImage "dist/spark-store_${ver}_x86_64.AppImage"
+          ls -lh dist
+
+      - name: Checksums and summary
+        if: always()
+        run: |
+          set -ux
+          ( cd dist && sha256sum ./* > SHA256SUMS.txt ) || true
+          {
+            echo "### 本次构建产物（${{ matrix.name }}）"
+            echo
+            echo '```'
+            ls -lh dist 2>/dev/null || echo "dist 为空"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for ext in deb rpm AppImage; do
+            compgen -G "dist/*.$ext" >/dev/null || echo "::warning::本次没有生成 .$ext 包，请看上方对应步骤的日志"
+          done
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-store-packages-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach packages to Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
