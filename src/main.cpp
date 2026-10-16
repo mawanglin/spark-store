@@ -18,9 +18,11 @@
 #include <QSettings>
 #include <QFile>
 #include <QStandardPaths>
+#include <QScreen>
 #include <QSurfaceFormat>
 
 #include <backend/DataCollectorAndUploader.h>
+#include <backend/ThemeChecker.h>
 
 DCORE_USE_NAMESPACE
 DWIDGET_USE_NAMESPACE
@@ -103,6 +105,31 @@ void crashHandler(int sig) {
     exit(1);
 }
 
+/**
+ * @brief 打印一份 UI 环境快照：平台插件、默认字体、DPI、主题类型以及相关环境变量
+ * @note 非 deepin 桌面（Kubuntu 等）上出现「字体不显示 / 主题错乱」时，
+ *       先把这段日志贴出来，可以直接区分问题出在平台插件、平台主题、字体还是主题判断上。
+ */
+static void logUiEnvironment(const QGuiApplication &app)
+{
+    qDebug().noquote() << QStringLiteral(
+                              "UI environment:\n"
+                              "  platform plugin      : %1\n"
+                              "  default font         : %2 (%3pt)\n"
+                              "  logical dpi          : %4\n"
+                              "  dark theme           : %5\n"
+                              "  XDG_CURRENT_DESKTOP  : %6\n"
+                              "  QT_QPA_PLATFORM      : %7\n"
+                              "  QT_QPA_PLATFORMTHEME : %8")
+                              .arg(app.platformName())
+                              .arg(app.font().family())
+                              .arg(app.font().pointSizeF())
+                              .arg(app.primaryScreen() ? app.primaryScreen()->logicalDotsPerInch() : -1.0)
+                              .arg(ThemeChecker::instance()->useDarkTheme() ? QStringLiteral("yes") : QStringLiteral("no"))
+                              .arg(QString::fromUtf8(qgetenv("XDG_CURRENT_DESKTOP")))
+                              .arg(QString::fromUtf8(qgetenv("QT_QPA_PLATFORM")))
+                              .arg(QString::fromUtf8(qgetenv("QT_QPA_PLATFORMTHEME")));
+}
 
 int main(int argc, char *argv[])
 {
@@ -169,19 +196,36 @@ int main(int argc, char *argv[])
         DApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);
     }
 
-    // 强制使用 DTK 平台插件
-    QVector<char *> fakeArgs(argc + 2);
+    /**
+     * 平台主题：只在 deepin 系环境里强制使用 DTK 平台主题。
+     *
+     * 在 Kubuntu 等桌面上注入 "-platformtheme deepin" 会绕过桌面自己的 Qt 平台主题
+     * （KDE 的 plasma-integration 正是通过它把系统字体、配色、图标主题交给 Qt 应用），
+     * 结果就是：系统里设置的字体对商店失效、配色跟着 DTK 走，
+     * 非 DDE 环境下主题判断还会退化成兜底值（进而出现深色/浅色错配、文字看不见）。
+     */
+    const bool useDeepinPlatformTheme = Utils::isDeepinFamily();
+    const int extraArgs = useDeepinPlatformTheme ? 2 : 0;
+
+    QVector<char *> fakeArgs(argc + extraArgs + 1); // 末尾再留一个 nullptr 作为 argv 终止符
     fakeArgs[0] = argv[0];
-    fakeArgs[1] = const_cast<char *>("-platformtheme");
-    fakeArgs[2] = const_cast<char *>("deepin");
+    if (useDeepinPlatformTheme)
+    {
+        fakeArgs[1] = const_cast<char *>("-platformtheme");
+        fakeArgs[2] = const_cast<char *>("deepin");
+    }
     for (int i = 1; i < argc; i++)
     {
-        fakeArgs[i + 2] = argv[i];
+        fakeArgs[i + extraArgs] = argv[i];
     }
-    int fakeArgc = argc + 2; // QCoreApplication 的 argc 要用引用，避免 c++ 编译器优化
+    fakeArgs[argc + extraArgs] = nullptr;
+    int fakeArgc = argc + extraArgs; // QCoreApplication 的 argc 要用引用，避免 c++ 编译器优化
     Application a(fakeArgc, fakeArgs.data());
     // 设置版本和构建时间
     a.setBuildDateTime(buildDateTime);
+
+    // 打印一份 UI 环境快照：排查「非 deepin 桌面下字体/主题异常」时先看这段日志
+    logUiEnvironment(a);
 
     // 限制单实例运行
     if (!a.setSingleInstance("spark-store"))

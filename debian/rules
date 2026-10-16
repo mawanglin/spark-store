@@ -7,6 +7,10 @@ include /usr/share/dpkg/default.mk
 DEB_BUILD_ARCH ?= $(shell dpkg-architecture -qDEB_BUILD_ARCH)
 DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
+# make 的并行度：未显式指定时按 CPU 核数。
+# 注意 `make -j$(JOBS)` 在 JOBS 未定义时会退化成 `make -j`（无限并行），在 CI 构建机上很容易把内存打爆。
+JOBS ?= $(shell nproc)
+
 # Use realtime timestamp instead of the latest entry in debian/changelog
 SOURCE_DATE_EPOCH := $(shell date +%s)
 

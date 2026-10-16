@@ -264,39 +264,29 @@ void AppIntoPage::clear()
 
 void AppIntoPage::setTheme(bool dark)
 {
-    if (dark)
-    {
-        QString frameStyleSheet ="#frame,#frame_2,#frame_3,#frame_4 {background-color: #252525; border-radius: 14px; border: 1px solid rgb(64, 64, 64);}\
-                                  QLabel#cardtitle,QLabel#title,QLabel#title_1,QLabel#title_2,QLabel#title_3 {color: #FFFFFF}";
-        ui->frame->setStyleSheet(frameStyleSheet);
-        ui->frame_2->setStyleSheet(frameStyleSheet);
-        ui->frame_3->setStyleSheet(frameStyleSheet);
-        ui->frame_4->setStyleSheet(frameStyleSheet);
+    /**
+     * NOTE: 卡片底色/描边改为由当前调色板派生，不再写死 #252525 / #fbfbfb，
+     *       同时去掉单独写死的 QLabel 文字颜色（QLabel#cardtitle{color:#FFF}）。
+     *       背景与文字同源后，在非 DDE 桌面（KDE/GNOME）上也不会出现
+     *       「文字色与卡片底色来自两套判断」导致文字看不见的情况。
+     */
+    const QString frameStyleSheet =
+        QStringLiteral("#frame,#frame_2,#frame_3,#frame_4 {background-color: %1; border-radius: 14px; border: 1px solid %2;}")
+            .arg(Utils::paletteCardColor(dark).name(), Utils::paletteCardBorderColor(dark).name());
 
-        ui->icon_1->setPixmap(QPixmap(":/icon/dark/box.svg"));
-        ui->icon_2->setPixmap(QPixmap(":/icon/dark/box.svg"));
-        ui->icon_3->setPixmap(QPixmap(":/icon/dark/calendar.svg"));
-        ui->icon_4->setPixmap(QPixmap(":/icon/dark/text.svg"));
-        ui->icon_5->setPixmap(QPixmap(":/icon/dark/folder.svg"));
-        ui->icon_6->setPixmap(QPixmap(":/icon/dark/globe.svg"));
-    }
-    else
-    {
-        //亮色模式
-        QString frameStyleSheet ="#frame,#frame_2,#frame_3,#frame_4 {background-color: #fbfbfb; border-radius: 14px; border: 1px solid rgb(229,229,229);}\
-                                  QLabel#cardtitle,QLabel#title,QLabel#title_1,QLabel#title_2,QLabel#title_3 {color: #000000}";
-        ui->frame->setStyleSheet(frameStyleSheet);
-        ui->frame_2->setStyleSheet(frameStyleSheet);
-        ui->frame_3->setStyleSheet(frameStyleSheet);
-        ui->frame_4->setStyleSheet(frameStyleSheet);
+    ui->frame->setStyleSheet(frameStyleSheet);
+    ui->frame_2->setStyleSheet(frameStyleSheet);
+    ui->frame_3->setStyleSheet(frameStyleSheet);
+    ui->frame_4->setStyleSheet(frameStyleSheet);
 
-        ui->icon_1->setPixmap(QPixmap(":/icon/light/box.svg"));
-        ui->icon_2->setPixmap(QPixmap(":/icon/light/box.svg"));
-        ui->icon_3->setPixmap(QPixmap(":/icon/light/calendar.svg"));
-        ui->icon_4->setPixmap(QPixmap(":/icon/light/text.svg"));
-        ui->icon_5->setPixmap(QPixmap(":/icon/light/folder.svg"));
-        ui->icon_6->setPixmap(QPixmap(":/icon/light/globe.svg"));
-    }
+    const QString iconTheme = dark ? QStringLiteral("dark") : QStringLiteral("light");
+
+    ui->icon_1->setPixmap(QPixmap(QStringLiteral(":/icon/%1/box.svg").arg(iconTheme)));
+    ui->icon_2->setPixmap(QPixmap(QStringLiteral(":/icon/%1/box.svg").arg(iconTheme)));
+    ui->icon_3->setPixmap(QPixmap(QStringLiteral(":/icon/%1/calendar.svg").arg(iconTheme)));
+    ui->icon_4->setPixmap(QPixmap(QStringLiteral(":/icon/%1/text.svg").arg(iconTheme)));
+    ui->icon_5->setPixmap(QPixmap(QStringLiteral(":/icon/%1/folder.svg").arg(iconTheme)));
+    ui->icon_6->setPixmap(QPixmap(QStringLiteral(":/icon/%1/globe.svg").arg(iconTheme)));
 }
 
 void AppIntoPage::setDownloadWidget(DownloadListWidget *w)

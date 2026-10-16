@@ -1,5 +1,6 @@
 #include "applistpage.h"
 #include "ui_applistpage.h"
+#include "utils/utils.h"
 
 #define BUILD_URL(theme, arch) \
     api->getServerUrl() + SparkAPI::getArchDir() + "/#/flamescion/" + (type.isEmpty() ? "?" : "applist?type=" + type + "&") + theme + "&arch=" + arch
@@ -13,15 +14,10 @@ AppListPage::AppListPage(QWidget *parent) : QWidget(parent),
 void AppListPage::setTheme(bool dark)
 {
     isDark = dark;
-    if (dark)
-    {
-        this->setStyleSheet("#frame{background-color: #252525;border-radius:14px;border:1px solid rgb(64, 64, 64);}");
-    }
-    else
-    {
-        // 亮色模式
-        this->setStyleSheet("#frame{background-color: #ffffff;border-radius:14px;border:1px solid rgb(229,229,229);}");
-    }
+
+    // NOTE: 背景/描边色由当前调色板派生（与文字色同源）；写死颜色在非 DDE 桌面上可能与调色板错配
+    this->setStyleSheet(QStringLiteral("#frame{background-color: %1;border-radius:14px;border:1px solid %2;}")
+                            .arg(Utils::paletteCardColor(dark).name(), Utils::paletteCardBorderColor(dark).name()));
     if (isSearch)
     {
         getSearchList(nowType);

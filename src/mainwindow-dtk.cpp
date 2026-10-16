@@ -1,6 +1,7 @@
 #include "mainwindow-dtk.h"
 #include "ui_mainwindow-dtk.h"
 #include "utils/widgetanimation.h"
+#include "utils/utils.h"
 #include "widgets/common/progressbutton.h"
 #include "widgets/downloadlistwidget.h"
 #include "widgets/common/downloaditem.h"
@@ -302,10 +303,18 @@ void MainWindow::initTrayIcon()
 
 void MainWindow::refreshTheme(bool isDarkMode)
 {
+    /**
+     * NOTE: 窗口底色不再写死（#2a2b2b / #f3f7f8 只作为调色板不可用时的兜底值）。
+     *       背景色必须与控件文字色同源：文字色来自当前 application palette，
+     *       背景若只按 ThemeChecker 的判断写死，在非 DDE 桌面（KDE/GNOME）上两者可能不一致，
+     *       出现「白字画在浅色底上」——用户看到的就是"字体不显示"。
+     */
+    const QColor windowMaskColor = Utils::paletteWindowColor(isDarkMode ? QColor("#2a2b2b") : QColor("#f3f7f8"));
+
     // 使用isDarkMode变量来判断是否是深色模式
     if (isDarkMode) {
         //深色模式
-        setMaskColor(QColor("#2a2b2b"));
+        setMaskColor(windowMaskColor);
         backButton->setIcon(QIcon(":/icon/dark/back.svg"));
         downloadButton->setIcon(":/icon/dark/download.svg");
         downloadButton->setBackgroundColor(QColor("#444444"));
@@ -325,7 +334,7 @@ void MainWindow::refreshTheme(bool isDarkMode)
         }
     } else {
         //亮色模式
-        setMaskColor(QColor("#f3f7f8"));
+        setMaskColor(windowMaskColor);
         backButton->setIcon(QIcon(":/icon/light/back.svg"));
         downloadButton->setBackgroundColor(QColor("#e3e4e4"));
         downloadButton->setColor(QColor("#66CCFF"));

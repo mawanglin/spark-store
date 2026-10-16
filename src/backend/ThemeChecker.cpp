@@ -2,6 +2,7 @@
 
 #include <QDBusConnection>
 #include <QDebug>
+#include <QGuiApplication>
 
 Q_GLOBAL_STATIC(ThemeChecker, m_instance)
 
@@ -30,11 +31,18 @@ ThemeChecker *ThemeChecker::instance()
 
 bool ThemeChecker::useDarkTheme()
 {
-    if (m_paletteType == Dtk::Gui::DGuiApplicationHelper::ColorType::UnknownType) {
-        return m_themeType == Dtk::Gui::DGuiApplicationHelper::ColorType::DarkType;
-    } else {
+    if (m_paletteType != Dtk::Gui::DGuiApplicationHelper::ColorType::UnknownType) {
         return m_paletteType == Dtk::Gui::DGuiApplicationHelper::ColorType::DarkType;
     }
+
+    if (m_themeType != Dtk::Gui::DGuiApplicationHelper::ColorType::UnknownType) {
+        return m_themeType == Dtk::Gui::DGuiApplicationHelper::ColorType::DarkType;
+    }
+
+    // 兜底：两个判断都未知时（非 DDE 桌面上 portal / dconf 都读不到时会出现），
+    // 直接以当前调色板为准，避免永远判定成亮色、进而与调色板里的文字颜色错配
+    return Dtk::Gui::DGuiApplicationHelper::toColorType(QGuiApplication::palette())
+           == Dtk::Gui::DGuiApplicationHelper::ColorType::DarkType;
 }
 
 void ThemeChecker::initThemeType()
@@ -44,25 +52,34 @@ void ThemeChecker::initThemeType()
     if (msg.type() != QDBusMessage::MessageType::ReplyMessage || msg.arguments().size() < 1) {
         qWarning().noquote() << "Init color-scheme from D-Bus failed:" << msg.errorName() << msg.errorMessage();
         m_themeType = Dtk::Gui::DGuiApplicationHelper::toColorType(Dtk::Gui::DGuiApplicationHelper::fetchPalette(Dtk::Gui::DGuiApplicationHelper::instance()->applicationTheme()));
-        return;
+    } else {
+        quint32 colorScheme = qvariant_cast<QDBusVariant>(qvariant_cast<QDBusVariant>(msg.arguments().first()).variant()).variant().toUInt();
+        switch (colorScheme) {
+        case 1:
+            m_themeType = Dtk::Gui::DGuiApplicationHelper::ColorType::DarkType;
+            break;
+        case 2:
+            m_themeType = Dtk::Gui::DGuiApplicationHelper::ColorType::LightType;
+            break;
+        default:
+            qInfo().noquote() << QString("color-scheme: %1, fetching themeType according to QPalette::Window").arg(colorScheme);
+            m_themeType = Dtk::Gui::DGuiApplicationHelper::toColorType(Dtk::Gui::DGuiApplicationHelper::fetchPalette(Dtk::Gui::DGuiApplicationHelper::instance()->applicationTheme()));
+            break;
+        }
     }
 
-    quint32 colorScheme = qvariant_cast<QDBusVariant>(qvariant_cast<QDBusVariant>(msg.arguments().first()).variant()).variant().toUInt();
-    switch (colorScheme) {
-    case 1:
-        m_themeType = Dtk::Gui::DGuiApplicationHelper::ColorType::DarkType;
-        break;
-    case 2:
-        m_themeType = Dtk::Gui::DGuiApplicationHelper::ColorType::LightType;
-        break;
-    default:
-        qInfo().noquote() << QString("color-scheme: %1, fetching themeType according to QPalette::Window").arg(colorScheme);
-        m_themeType = Dtk::Gui::DGuiApplicationHelper::toColorType(Dtk::Gui::DGuiApplicationHelper::fetchPalette(Dtk::Gui::DGuiApplicationHelper::instance()->applicationTheme()));
-        break;
-    }
-
+    /**
+     * NOTE: 旧实现在 D-Bus 读取失败时直接 return，跳过了这里的调色板同步。
+     *       非 DDE 桌面（Kubuntu 等）上 color-scheme 读不到必然走到那条路径，
+     *       于是 paletteType 一直是 Unknown、应用调色板也一直不更新，
+     *       「界面背景色」与「控件文字色」就来自两套互不相干的来源。
+     */
     if (m_paletteType == Dtk::Gui::DGuiApplicationHelper::ColorType::UnknownType) {
-        Dtk::Gui::DGuiApplicationHelper::instance()->setApplicationPalette(Dtk::Gui::DGuiApplicationHelper::standardPalette(m_themeType));
+        const Dtk::Gui::DGuiApplicationHelper::ColorType themeType =
+            (m_themeType == Dtk::Gui::DGuiApplicationHelper::ColorType::UnknownType)
+                ? Dtk::Gui::DGuiApplicationHelper::ColorType::LightType
+                : m_themeType;
+        Dtk::Gui::DGuiApplicationHelper::instance()->setApplicationPalette(Dtk::Gui::DGuiApplicationHelper::standardPalette(themeType));
     }
 }
 

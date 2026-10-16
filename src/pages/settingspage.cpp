@@ -30,15 +30,11 @@ SettingsPage::SettingsPage(QWidget *parent)
 
 void SettingsPage::setTheme(bool dark)
 {
-    if (dark)
-    {
-        this->setStyleSheet("#frame{background-color: #252525;border-radius:14px;border:1px solid rgb(64, 64, 64);}");
-    }
-    else
-    {
-        // ���色模式
-        this->setStyleSheet("#frame{background-color: #ffffff;border-radius:14px;border:1px solid rgb(229,229,229);}");
-    }
+    // NOTE: 背景/描边色由当前调色板派生（与文字色同源）。
+    //       旧实现把 #252525 / #ffffff 写死，在非 DDE 桌面上可能与调色板里的文字色错配，
+    //       表现为「卡片里有字但看不见」。顺带清理了此处残留的乱码注释。
+    this->setStyleSheet(QStringLiteral("#frame{background-color: %1;border-radius:14px;border:1px solid %2;}")
+                            .arg(Utils::paletteCardColor(dark).name(), Utils::paletteCardBorderColor(dark).name()));
 }
 
 void SettingsPage::readServerList()

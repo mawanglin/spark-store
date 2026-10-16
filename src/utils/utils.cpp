@@ -4,6 +4,8 @@
 #include <DSysInfo>
 
 #include <QDBusInterface>
+#include <QGuiApplication>
+#include <QPalette>
 #include <QProcessEnvironment>
 #include <QSettings>
 #include <QStandardPaths>
@@ -45,18 +47,58 @@ void Utils::sendNotification(const QString &icon, const QString &title, const QS
 
 /**
  * @brief Utils::isDDE 判断是否使用 DDE 桌面环境
- * @return
+ * @return true: 当前会话是 DDE；false: 其它桌面（KDE / GNOME / XFCE ...）
+ * @note 旧实现在非 DDE 桌面上会把 XDG_CURRENT_DESKTOP 直接改写成 "Deepin"。
+ *       这个变量是进程级、全局的，会让 xdg-desktop-portal、GTK 等按桌面环境选择后端的组件
+ *       全部误判（典型表现：color-scheme 读不到，主题只能走兜底分支；见 ThemeChecker）。
+ *       这里只做判断，不再污染环境变量。
  */
 bool Utils::isDDE()
 {
-    bool isDDE = true;
-    if (!QString::fromUtf8(qgetenv("XDG_CURRENT_DESKTOP")).toLower().startsWith("deepin"))
-    {
-        qputenv("XDG_CURRENT_DESKTOP", "Deepin");
-        isDDE = false;
+    return QString::fromUtf8(qgetenv("XDG_CURRENT_DESKTOP")).toLower().contains(QLatin1String("deepin"));
+}
+
+/**
+ * @brief 通过 /etc/os-release 判断是否为 deepin 系发行版（deepin / UOS / LinuxDeepin）
+ * @note 只读文件与变量，不依赖 QCoreApplication，因此在 QApplication 构造之前调用也是安全的
+ *       （setQPAPlatform() 就是在这个时机被调用的）。
+ */
+static bool osReleaseIsDeepinFamily()
+{
+    QFile file(QStringLiteral("/etc/os-release"));
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return false;
     }
 
-    return isDDE;
+    const QStringList lines = QString::fromUtf8(file.readAll()).toLower().split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        if (!line.startsWith(QLatin1String("id=")) && !line.startsWith(QLatin1String("id_like="))) {
+            continue;
+        }
+
+        const QString value = line.mid(line.indexOf(QLatin1Char('=')) + 1).remove(QLatin1Char('"'));
+        const QStringList tokens = value.split(QLatin1Char(' '));
+        for (const QString &token : tokens) {
+            if (token == QLatin1String("deepin") || token == QLatin1String("linuxdeepin") || token == QLatin1String("uos")) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @brief Utils::isDeepinFamily 判断是否运行在 deepin 系发行版 / DDE 会话上
+ * @note deepin 专有的集成（dxcb 平台插件、deepin 平台主题）只应该在这些环境里启用。
+ */
+bool Utils::isDeepinFamily()
+{
+    if (isDDE()) {
+        return true;
+    }
+
+    return osReleaseIsDeepinFamily();
 }
 
 /**
@@ -176,34 +218,81 @@ QString Utils::initUUID(){
 
 /**
  * @brief Utils::setQPAPlatform Set display backend
+ * @note 本函数在 QApplication 构造之前调用，因此只能用环境变量 + /etc/os-release 判断发行版。
+ *
+ *       改动说明：旧实现无条件把 QT_QPA_PLATFORM 覆盖成 "dxcb;xcb"（X11）/ "wayland"。
+ *       dxcb 是 deepin 私有的平台插件，在 Kubuntu 这类非 deepin 桌面上强行加载它会
+ *       绕过桌面自身的窗口装饰与合成协议（KWin/Breeze），是窗口渲染异常（含文字不显示）的常见来源。
+ *       现在只在 deepin 系环境里启用 dxcb，其它发行版交给 Qt / 桌面环境自己决定。
  */
 void Utils::setQPAPlatform()
 {
     // WARNING: 请在 initConfig() 执行后调用
-    bool isDDE = Utils::isDDE(); // WARNING: 只能执行一次，后续执行时环境变量已经被覆盖，导致判断错误
-    bool isWayland = Utils::isWayland();
+    const bool isWayland = Utils::isWayland();
+    const bool isDeepinFamilyOS = Utils::isDeepinFamily();
 
     QSettings config(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/config.ini", QSettings::IniFormat);
-    bool useWayland = config.value("runtime/useWayland").toBool();
+    const bool useWayland = config.value("runtime/useWayland").toBool();
 
-    qDebug() << "System Wayland enabled:" << isWayland << "Spark Wayland enabled:" << useWayland;
+    qDebug() << "System Wayland enabled:" << isWayland
+             << "Spark Wayland enabled:" << useWayland
+             << "deepin family:" << isDeepinFamilyOS;
+
+    // 用户或桌面环境已经显式指定了平台插件，就不要抢（便于排查与自定义）
+    if (qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
+        qDebug() << "Keep the QT_QPA_PLATFORM from environment:" << qgetenv("QT_QPA_PLATFORM");
+        return;
+    }
 
     /**
      * NOTE: https://github.com/linuxdeepin/developer-center/issues/7217#issuecomment-1922653903
      * DDE Wayland has been deprecated, so using wayland plugin only
      */
-    if (isWayland && useWayland /*&& !(Dtk::Core::DSysInfo::isDeepin() || isDDE)*/)
+    if (isWayland && useWayland)
     {
         qputenv("QT_QPA_PLATFORM", "wayland");
     }
-    // else if (isWayland && useWayland && (Dtk::Core::DSysInfo::isDeepin() && isDDE))
-    // {
-    //     qputenv("QT_QPA_PLATFORM", "dwayland");
-    // }
-    else
+    else if (isDeepinFamilyOS)
     {
+        // dxcb 缺失时回退到 xcb
         qputenv("QT_QPA_PLATFORM", "dxcb;xcb");
     }
+    else
+    {
+        // 非 deepin 桌面：不注入 deepin 专有插件，保持 Qt 默认（X11 下即 xcb）
+        qDebug() << "Non-deepin desktop detected, keep the default platform plugin";
+    }
+}
+
+/**
+ * @brief Utils::paletteWindowColor 取当前调色板的窗口底色
+ * @param fallbackColor 调色板不可用时使用的兜底色
+ * @note 背景色必须与控件文字色来自同一套调色板：旧实现把背景色写死成
+ *       #2a2b2b / #f3f7f8，而文字色来自 DTK 调色板，两者在非 DDE 桌面上可能不一致，
+ *       出现「白字画在浅色底上」——用户看到的就是"字体不显示"。
+ */
+QColor Utils::paletteWindowColor(const QColor &fallbackColor)
+{
+    const QColor color = QGuiApplication::palette().color(QPalette::Window);
+    return color.isValid() ? color : fallbackColor;
+}
+
+/**
+ * @brief Utils::paletteCardColor 卡片/分组框底色：由窗口底色派生，保留与窗口的层次差
+ */
+QColor Utils::paletteCardColor(bool dark)
+{
+    const QColor base = paletteWindowColor(dark ? QColor("#2a2b2b") : QColor("#f3f7f8"));
+    return dark ? base.darker(112) : base.lighter(103);
+}
+
+/**
+ * @brief Utils::paletteCardBorderColor 卡片/分组框描边色
+ */
+QColor Utils::paletteCardBorderColor(bool dark)
+{
+    const QColor base = paletteWindowColor(dark ? QColor("#2a2b2b") : QColor("#f3f7f8"));
+    return dark ? base.lighter(150) : base.darker(108);
 }
 
 /**
